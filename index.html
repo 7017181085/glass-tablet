@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Планшет — чертёж по штрихкоду</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 12px; }
+    button { font-size:18px; padding:12px 14px; width: 100%; margin: 6px 0; }
+    .card { border:1px solid #ddd; border-radius:12px; padding:12px; margin-top:12px; }
+    .muted { color:#666; }
+    #preview { width:100%; border-radius:12px; margin-top:12px; display:none; }
+  </style>
+</head>
+<body>
+  <h2>Чертёж заказа по штрихкоду</h2>
+  <div class="muted">Сканируй штрихкод стекла → чертёж откроется автоматически.</div>
+
+  <button id="btnScan">📷 Сканировать</button>
+  <video id="preview" autoplay playsinline></video>
+
+  <div id="out"></div>
+
+<script>
+  const SUPABASE_URL = "https://mfvxrikcsdczzspnjrhi.supabase.co";
+  const SUPABASE_ANON_KEY = "ВСТАВЬ_СВОЙ_ANON_KEY";
+
+  const headers = {
+    "apikey": SUPABASE_ANON_KEY,
+    "Authorization": "Bearer " + SUPABASE_ANON_KEY
+  };
+
+  const out = document.getElementById("out");
+  const video = document.getElementById("preview");
+  const btnScan = document.getElementById("btnScan");
+
+  let stream = null, detector = null, scanning = false;
+
+  function esc(s){ return String(s||"").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+
+  async function supaGet(path) {
+    const res = await fetch(SUPABASE_URL + "/rest/v1/" + path, { headers });
+    if (!res.ok) throw new Error(await res.text());
+    return await res.json();
+  }
+
+  async function getOrderByBarcode(barcode) {
+    const rows = await supaGet(`pieces?select=order_number&barcode=eq.${encodeURIComponent(barcode)}&limit=1`);
+    return rows[0]?.order_number ? String(rows[0].order_number) : null;
+  }
+
+  async function getFirstAttachmentByOrder(orderNumber) {
+    const rows = await supaGet(
+      `order_attachments?select=file_name,file_url,uploaded_at`
+      + `&order_number=eq.${encodeURIComponent(orderNumber)}`
+      + `&order=uploaded_at.desc`
+      + `&limit=1`
+    );
+    return rows[0] || null;
+  }
+
+  function showError(title, text) {
+    out.innerHTML = `
+      <div class="card">
+        <b>${esc(title)}</b>
+        <div class="muted" style="margin-top:8px;">${esc(text)}</div>
+        <div style="margin-top:10px;">
+          <button onclick="window.location.reload()">Сканировать снова</button>
+        </div>
+      </div>`;
+  }
+
+  async function handleBarcode(barcode){
+    out.innerHTML = `<div class="card"><div class="muted">Ищу заказ по штрихкоду ${esc(barcode)}...</div></div>`;
+    try {
+      const orderNumber = await getOrderByBarcode(barcode);
+      if (!orderNumber) {
+        showError("Не найдено", "Штрихкод не найден в базе pieces.");
+        return;
+      }
+
+      out.innerHTML = `<div class="card"><div class="muted">Заказ ${esc(orderNumber)} найден. Открываю чертёж...</div></div>`;
+      const file = await getFirstAttachmentByOrder(orderNumber);
+
+      if (!file || !file.file_url) {
+        showError("Нет чертежа", `Для заказа ${orderNumber} нет загруженного PDF/фото.`);
+        return;
+      }
+
+      // ✅ АВТООТКРЫТИЕ (самый надежный способ на Android)
+      window.location.href = file.file_url;
+
+    } catch (e) {
+      showError("Ошибка", String(e.message || e));
+    }
+  }
+
+  async function startScan(){
+    if (!("BarcodeDetector" in window)) {
+      alert("Этот браузер не поддерживает BarcodeDetector. Используй Chrome на Android.");
+      return;
+    }
+    detector = new BarcodeDetector({ formats: ["code_128","qr_code","ean_13","ean_8"] });
+
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+    video.srcObject = stream;
+    video.style.display = "block";
+    btnScan.textContent = "⛔ Остановить";
+    scanning = true;
+
+    const tick = async () => {
+      if (!scanning) return;
+      try {
+        const codes = await detector.detect(video);
+        if (codes && codes.length) {
+          const code = (codes[0].rawValue || "").trim();
+          stopScan();
+          await handleBarcode(code);
+          return;
+        }
+      } catch {}
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+
+  function stopScan(){
+    scanning = false;
+    btnScan.textContent = "📷 Сканировать";
+    video.style.display = "none";
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  }
+
+  btnScan.addEventListener("click", () => scanning ? stopScan() : startScan());
+</script>
+</body>
+</html>
