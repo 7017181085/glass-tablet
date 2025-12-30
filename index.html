@@ -2,178 +2,178 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Чертёж заказа по штрихкоду</title>
-
   <style>
     body { font-family: Arial, sans-serif; margin: 12px; }
-    h2 { margin-bottom: 6px; }
-    button {
-      font-size: 18px;
-      padding: 14px;
-      width: 100%;
-      margin: 8px 0;
-    }
-    video {
-      width: 100%;
-      border-radius: 12px;
-      background: #000;
-      margin-top: 10px;
-    }
-    .card {
-      border: 1px solid #ddd;
-      border-radius: 12px;
-      padding: 12px;
-      margin-top: 12px;
-    }
-    .muted { color: #666; }
-    .big { font-size: 20px; font-weight: bold; }
-    input {
-      font-size: 18px;
-      padding: 12px;
-      width: 100%;
-      box-sizing: border-box;
-      margin-top: 8px;
-    }
+    h2 { margin: 6px 0; }
+    button { font-size:18px; padding:12px 14px; width:100%; margin: 6px 0; }
+    .card { border:1px solid #ddd; border-radius:12px; padding:12px; margin-top:12px; }
+    .muted { color:#666; }
+    .big { font-size:20px; font-weight:700; }
+    input { font-size:18px; padding:12px; width:100%; box-sizing:border-box; margin-top:8px; }
+    #reader { width:100%; border-radius:12px; overflow:hidden; margin-top:10px; }
+    .row { display:flex; gap:10px; margin-top:8px; }
+    .row button { width: 40%; }
+    .row input { width: 60%; margin-top:0; }
   </style>
 </head>
-
 <body>
   <h2>Чертёж заказа по штрихкоду</h2>
-  <div class="muted">
-    Наведи камеру на штрихкод стекла — PDF / фото откроется автоматически
-  </div>
+  <div class="muted">Нажми “Сканировать” → наведи камеру на штрихкод → чертёж откроется автоматически.</div>
 
   <button id="btnScan">📷 Сканировать</button>
   <button id="btnStop" style="display:none;">⛔ Остановить</button>
 
-  <video id="preview" autoplay playsinline></video>
+  <div id="reader" style="display:none;"></div>
 
   <div class="card">
-    <div class="muted">Если камера не ловит — вставь штрихкод вручную:</div>
-    <input id="manual" placeholder="Вставь штрихкод и нажми Enter" />
+    <div class="muted">Если скан не ловит — введи штрихкод вручную:</div>
+    <div class="row">
+      <input id="manual" placeholder="Например: 0000140012" />
+      <button id="btnOpen">Открыть</button>
+    </div>
   </div>
 
   <div id="out"></div>
 
-  <script type="module">
-    import {
-      BrowserMultiFormatReader,
-      BarcodeFormat,
-      DecodeHintType,
-      NotFoundException
-    } from "https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/+esm";
+  <!-- Надёжная библиотека (без module) -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.10/minified/html5-qrcode.min.js"></script>
 
-    /* ================= НАСТРОЙКИ ================= */
-
+  <script>
+    // ====== НАСТРОЙКИ SUPABASE ======
     const SUPABASE_URL = "https://mfvxrikcsdczzspnjrhi.supabase.co";
-
-    const SUPABASE_ANON_KEY =
-      "sb_publishable_vgoMuq7bXzlt25n3PIfmWg_MnTr9JgZ";
+    const SUPABASE_ANON_KEY = "sb_publishable_vgoMuq7bXzlt25n3PIfmWg_MnTr9JgZ";
 
     const headers = {
-      apikey: SUPABASE_ANON_KEY,
-      Authorization: "Bearer " + SUPABASE_ANON_KEY
+      "apikey": SUPABASE_ANON_KEY,
+      "Authorization": "Bearer " + SUPABASE_ANON_KEY
     };
 
-    /* ================= УТИЛИТЫ ================= */
+    const out = document.getElementById("out");
+    const readerEl = document.getElementById("reader");
+    const btnScan = document.getElementById("btnScan");
+    const btnStop = document.getElementById("btnStop");
+    const manual = document.getElementById("manual");
+    const btnOpen = document.getElementById("btnOpen");
 
-    const $ = (id) => document.getElementById(id);
-    const out = $("out");
-
-    function show(title, text) {
-      out.innerHTML = `
-        <div class="card">
-          <div class="big">${title}</div>
-          <div class="muted" style="margin-top:8px;">${text}</div>
-        </div>`;
+    function esc(s){ return String(s||"").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+    function show(title, text){
+      out.innerHTML = `<div class="card"><div class="big">${esc(title)}</div><div class="muted" style="margin-top:8px;">${esc(text)}</div></div>`;
     }
 
-    async function supa(path) {
+    async function supaGet(path){
       const r = await fetch(SUPABASE_URL + "/rest/v1/" + path, { headers });
-      if (!r.ok) throw new Error(await r.text());
+      if(!r.ok) throw new Error(await r.text());
       return await r.json();
     }
 
-    async function openByBarcode(barcode) {
+    async function openDrawingByBarcode(barcode){
       show("Поиск…", "Штрихкод: " + barcode);
 
-      const piece = await supa(
-        `pieces?select=order_number&barcode=eq.${encodeURIComponent(barcode)}&limit=1`
-      );
+      // 1) pieces -> order_number
+      const p = await supaGet(`pieces?select=order_number&barcode=eq.${encodeURIComponent(barcode)}&limit=1`);
+      if(!p.length){
+        show("Не найдено", "Штрихкод не найден в таблице pieces");
+        return;
+      }
+      const orderNumber = String(p[0].order_number);
 
-      if (!piece.length) {
-        show("Не найдено", "Штрихкод отсутствует в базе");
+      // 2) order_attachments -> file_url (берём самый свежий)
+      const a = await supaGet(
+        `order_attachments?select=file_url,uploaded_at&order_number=eq.${encodeURIComponent(orderNumber)}&order=uploaded_at.desc&limit=1`
+      );
+      if(!a.length || !a[0].file_url){
+        show("Нет чертежа", "Для заказа " + orderNumber + " нет загруженного PDF/фото");
         return;
       }
 
-      const order = piece[0].order_number;
-
-      const files = await supa(
-        `order_attachments?select=file_url&order_number=eq.${order}&limit=1`
-      );
-
-      if (!files.length) {
-        show("Нет чертежа", "Для заказа " + order + " нет PDF / фото");
-        return;
-      }
-
-      window.location.href = files[0].file_url;
+      // 3) открыть
+      window.location.href = a[0].file_url;
     }
 
-    /* ================= СКАНЕР ================= */
+    // ====== СКАНЕР ======
+    let html5Qr = null;
+    let scanning = false;
 
-    const hints = new Map();
-    hints.set(DecodeHintType.POSSIBLE_FORMATS, [
-      BarcodeFormat.CODE_128,
-      BarcodeFormat.EAN_13,
-      BarcodeFormat.EAN_8,
-      BarcodeFormat.CODE_39,
-      BarcodeFormat.QR_CODE
-    ]);
+    async function startScan(){
+      if (scanning) return;
 
-    const reader = new BrowserMultiFormatReader(hints, {
-      delayBetweenScanAttempts: 150
-    });
+      // Проверка что библиотека реально загрузилась
+      if (typeof Html5Qrcode === "undefined"){
+        show("Ошибка", "Сканер не загрузился (Html5Qrcode undefined). Попробуй обновить страницу или проверь интернет.");
+        return;
+      }
 
-    let active = false;
-
-    async function start() {
-      if (active) return;
-      active = true;
-
-      $("btnScan").style.display = "none";
-      $("btnStop").style.display = "block";
+      scanning = true;
+      btnScan.style.display = "none";
+      btnStop.style.display = "block";
+      readerEl.style.display = "block";
       show("Сканирование", "Наведи камеру на штрихкод…");
 
-      await reader.decodeFromConstraints(
-        { video: { facingMode: "environment" } },
-        $("preview"),
-        async (result, err) => {
-          if (!active) return;
-          if (result) {
-            const code = result.getText();
-            stop();
-            await openByBarcode(code);
-          }
+      html5Qr = new Html5Qrcode("reader");
+
+      const config = {
+        fps: 10,
+        qrbox: { width: 250, height: 250 }, // рамка помогает фокусу
+        formatsToSupport: [
+          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.EAN_13,
+          Html5QrcodeSupportedFormats.EAN_8,
+          Html5QrcodeSupportedFormats.CODE_39,
+          Html5QrcodeSupportedFormats.QR_CODE
+        ]
+      };
+
+      try{
+        await html5Qr.start(
+          { facingMode: "environment" },
+          config,
+          async (decodedText) => {
+            // Успешно считали
+            await stopScan();
+            await openDrawingByBarcode(String(decodedText).trim());
+          },
+          () => {} // ошибки сканирования игнорируем (просто не найден код)
+        );
+      } catch(e){
+        scanning = false;
+        btnScan.style.display = "block";
+        btnStop.style.display = "none";
+        readerEl.style.display = "none";
+        show("Ошибка камеры", String(e && e.message ? e.message : e));
+      }
+    }
+
+    async function stopScan(){
+      if (!scanning) return;
+      scanning = false;
+
+      try{
+        if (html5Qr) {
+          await html5Qr.stop();
+          await html5Qr.clear();
         }
-      );
+      } catch {}
+      html5Qr = null;
+
+      btnScan.style.display = "block";
+      btnStop.style.display = "none";
+      readerEl.style.display = "none";
     }
 
-    function stop() {
-      active = false;
-      reader.reset();
-      $("btnScan").style.display = "block";
-      $("btnStop").style.display = "none";
-    }
+    btnScan.addEventListener("click", startScan);
+    btnStop.addEventListener("click", stopScan);
 
-    $("btnScan").onclick = start;
-    $("btnStop").onclick = stop;
+    btnOpen.addEventListener("click", async () => {
+      const code = manual.value.trim();
+      if (code) await openDrawingByBarcode(code);
+    });
 
-    $("manual").addEventListener("keydown", async (e) => {
+    manual.addEventListener("keydown", async (e) => {
       if (e.key === "Enter") {
-        const code = $("manual").value.trim();
-        if (code) await openByBarcode(code);
+        const code = manual.value.trim();
+        if (code) await openDrawingByBarcode(code);
       }
     });
   </script>
