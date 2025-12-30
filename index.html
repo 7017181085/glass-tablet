@@ -12,10 +12,12 @@
     .muted { color:#666; }
     .big { font-size:20px; font-weight:700; }
     input { font-size:18px; padding:12px; width:100%; box-sizing:border-box; margin-top:8px; }
-    #reader { width:100%; border-radius:12px; overflow:hidden; margin-top:10px; }
+    #reader, #preview { width:100%; border-radius:12px; overflow:hidden; margin-top:10px; background:#000; }
+    #preview { display:none; }
     .row { display:flex; gap:10px; margin-top:8px; }
     .row button { width: 40%; }
     .row input { width: 60%; margin-top:0; }
+    .log { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
   </style>
 </head>
 <body>
@@ -25,6 +27,10 @@
   <button id="btnScan">📷 Сканировать</button>
   <button id="btnStop" style="display:none;">⛔ Остановить</button>
 
+  <!-- Для BarcodeDetector -->
+  <video id="preview" autoplay playsinline></video>
+
+  <!-- Для html5-qrcode -->
   <div id="reader" style="display:none;"></div>
 
   <div class="card">
@@ -37,7 +43,7 @@
 
   <div id="out"></div>
 
-  <!-- Надёжная библиотека (без module) -->
+  <!-- Сканер-библиотека через стабильный CDN -->
   <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.10/html5-qrcode.min.js"></script>
 
   <script>
@@ -52,6 +58,7 @@
 
     const out = document.getElementById("out");
     const readerEl = document.getElementById("reader");
+    const video = document.getElementById("preview");
     const btnScan = document.getElementById("btnScan");
     const btnStop = document.getElementById("btnStop");
     const manual = document.getElementById("manual");
@@ -61,6 +68,16 @@
     function show(title, text){
       out.innerHTML = `<div class="card"><div class="big">${esc(title)}</div><div class="muted" style="margin-top:8px;">${esc(text)}</div></div>`;
     }
+    function log(text){
+      out.innerHTML = `<div class="card"><div class="big">Лог</div><div class="log">${esc(text)}</div></div>`;
+    }
+
+    // Показать любые ошибки на экране
+    window.onerror = function(message, source, lineno, colno, error){
+      show("JS ошибка", `${message}\n${source}:${lineno}:${colno}`);
+    };
+
+    show("Готово", "JS загрузился. Нажми “Сканировать”.");
 
     async function supaGet(path){
       const r = await fetch(SUPABASE_URL + "/rest/v1/" + path, { headers });
@@ -71,7 +88,6 @@
     async function openDrawingByBarcode(barcode){
       show("Поиск…", "Штрихкод: " + barcode);
 
-      // 1) pieces -> order_number
       const p = await supaGet(`pieces?select=order_number&barcode=eq.${encodeURIComponent(barcode)}&limit=1`);
       if(!p.length){
         show("Не найдено", "Штрихкод не найден в таблице pieces");
@@ -79,43 +95,84 @@
       }
       const orderNumber = String(p[0].order_number);
 
-      // 2) order_attachments -> file_url (берём самый свежий)
       const a = await supaGet(
         `order_attachments?select=file_url,uploaded_at&order_number=eq.${encodeURIComponent(orderNumber)}&order=uploaded_at.desc&limit=1`
       );
+
       if(!a.length || !a[0].file_url){
         show("Нет чертежа", "Для заказа " + orderNumber + " нет загруженного PDF/фото");
         return;
       }
 
-      // 3) открыть
       window.location.href = a[0].file_url;
     }
 
-    // ====== СКАНЕР ======
+    // ====== СКАНЕР: вариант 1 (BarcodeDetector) ======
+    let bdStream = null;
+    let bdDetector = null;
+    let bdRunning = false;
+
+    async function startBarcodeDetector(){
+      log("Кнопка нажата → пробую BarcodeDetector…");
+
+      if (!("BarcodeDetector" in window)) {
+        log("BarcodeDetector НЕ доступен → перейду на html5-qrcode");
+        return false;
+      }
+
+      bdDetector = new BarcodeDetector({ formats: ["code_128","ean_13","ean_8","code_39","qr_code"] });
+
+      bdStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+      video.srcObject = bdStream;
+      video.style.display = "block";
+      readerEl.style.display = "none";
+
+      bdRunning = true;
+
+      const tick = async () => {
+        if (!bdRunning) return;
+        try {
+          const codes = await bdDetector.detect(video);
+          if (codes && codes.length) {
+            const code = (codes[0].rawValue || "").trim();
+            if (code) {
+              await stopScanAll();
+              await openDrawingByBarcode(code);
+              return;
+            }
+          }
+        } catch (e) {
+          log("BarcodeDetector detect error: " + (e.message || e));
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+
+      log("BarcodeDetector стартовал. Наведи камеру на штрихкод.");
+      return true;
+    }
+
+    // ====== СКАНЕР: вариант 2 (html5-qrcode) ======
     let html5Qr = null;
-    let scanning = false;
+    let h5Running = false;
 
-    async function startScan(){
-      if (scanning) return;
+    async function startHtml5Qrcode(){
+      log("Пробую html5-qrcode…");
 
-      // Проверка что библиотека реально загрузилась
-      if (typeof Html5Qrcode === "undefined"){
-        show("Ошибка", "Сканер не загрузился (Html5Qrcode undefined). Попробуй обновить страницу или проверь интернет.");
+      if (typeof Html5Qrcode === "undefined") {
+        show("Ошибка", "Html5Qrcode undefined. Библиотека не загрузилась (проверь интернет/фильтры).");
         return;
       }
 
-      scanning = true;
-      btnScan.style.display = "none";
-      btnStop.style.display = "block";
       readerEl.style.display = "block";
-      show("Сканирование", "Наведи камеру на штрихкод…");
+      video.style.display = "none";
 
       html5Qr = new Html5Qrcode("reader");
+      h5Running = true;
 
       const config = {
-        fps: 10,
-        qrbox: { width: 250, height: 250 }, // рамка помогает фокусу
+        fps: 15,
+        qrbox: { width: 320, height: 320 },
         formatsToSupport: [
           Html5QrcodeSupportedFormats.CODE_128,
           Html5QrcodeSupportedFormats.EAN_13,
@@ -125,45 +182,62 @@
         ]
       };
 
-      try{
-        await html5Qr.start(
-          { facingMode: "environment" },
-          config,
-          async (decodedText) => {
-            // Успешно считали
-            await stopScan();
-            await openDrawingByBarcode(String(decodedText).trim());
-          },
-          () => {} // ошибки сканирования игнорируем (просто не найден код)
-        );
-      } catch(e){
-        scanning = false;
-        btnScan.style.display = "block";
-        btnStop.style.display = "none";
-        readerEl.style.display = "none";
-        show("Ошибка камеры", String(e && e.message ? e.message : e));
-      }
+      await html5Qr.start(
+        { facingMode: "environment" },
+        config,
+        async (decodedText) => {
+          const code = String(decodedText || "").trim();
+          if (!code) return;
+          await stopScanAll();
+          await openDrawingByBarcode(code);
+        },
+        () => {}
+      );
+
+      log("html5-qrcode стартовал. Наведи камеру на штрихкод.");
     }
 
-    async function stopScan(){
-      if (!scanning) return;
-      scanning = false;
+    async function stopScanAll(){
+      // stop BarcodeDetector
+      bdRunning = false;
+      if (bdStream) { bdStream.getTracks().forEach(t => t.stop()); bdStream = null; }
+      video.srcObject = null;
+      video.style.display = "none";
 
-      try{
-        if (html5Qr) {
-          await html5Qr.stop();
-          await html5Qr.clear();
-        }
-      } catch {}
+      // stop html5-qrcode
+      if (h5Running && html5Qr) {
+        try { await html5Qr.stop(); } catch {}
+        try { await html5Qr.clear(); } catch {}
+      }
       html5Qr = null;
+      h5Running = false;
 
       btnScan.style.display = "block";
       btnStop.style.display = "none";
       readerEl.style.display = "none";
     }
 
+    async function startScan(){
+      // ВАЖНО: чтобы точно понять, что клик работает
+      btnScan.disabled = true;
+      setTimeout(()=>btnScan.disabled=false, 500);
+
+      btnScan.style.display = "none";
+      btnStop.style.display = "block";
+
+      try {
+        const started = await startBarcodeDetector();
+        if (!started) {
+          await startHtml5Qrcode();
+        }
+      } catch (e) {
+        await stopScanAll();
+        show("Ошибка старта", String(e.message || e));
+      }
+    }
+
     btnScan.addEventListener("click", startScan);
-    btnStop.addEventListener("click", stopScan);
+    btnStop.addEventListener("click", stopScanAll);
 
     btnOpen.addEventListener("click", async () => {
       const code = manual.value.trim();
@@ -179,4 +253,3 @@
   </script>
 </body>
 </html>
-
