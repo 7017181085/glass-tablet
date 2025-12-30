@@ -2,21 +2,47 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Планшет — чертёж по штрихкоду</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Чертёж заказа по штрихкоду</title>
+
   <style>
     body { font-family: Arial, sans-serif; margin: 12px; }
-    button { font-size:18px; padding:12px 14px; width:100%; margin: 6px 0; }
-    .card { border:1px solid #ddd; border-radius:12px; padding:12px; margin-top:12px; }
-    .muted { color:#666; }
-    #preview { width:100%; border-radius:12px; margin-top:12px; background:#000; }
-    .big { font-size:20px; font-weight:700; }
-    input { font-size:18px; padding:12px; width:100%; box-sizing:border-box; margin-top:8px; }
+    h2 { margin-bottom: 6px; }
+    button {
+      font-size: 18px;
+      padding: 14px;
+      width: 100%;
+      margin: 8px 0;
+    }
+    video {
+      width: 100%;
+      border-radius: 12px;
+      background: #000;
+      margin-top: 10px;
+    }
+    .card {
+      border: 1px solid #ddd;
+      border-radius: 12px;
+      padding: 12px;
+      margin-top: 12px;
+    }
+    .muted { color: #666; }
+    .big { font-size: 20px; font-weight: bold; }
+    input {
+      font-size: 18px;
+      padding: 12px;
+      width: 100%;
+      box-sizing: border-box;
+      margin-top: 8px;
+    }
   </style>
 </head>
+
 <body>
   <h2>Чертёж заказа по штрихкоду</h2>
-  <div class="muted">Нажми “Сканировать”. Если камера включилась — поднеси штрихкод, подожди 1–2 сек.</div>
+  <div class="muted">
+    Наведи камеру на штрихкод стекла — PDF / фото откроется автоматически
+  </div>
 
   <button id="btnScan">📷 Сканировать</button>
   <button id="btnStop" style="display:none;">⛔ Остановить</button>
@@ -24,13 +50,12 @@
   <video id="preview" autoplay playsinline></video>
 
   <div class="card">
-    <div class="muted">Если сканер не ловит (плохой фокус/свет) — вставь штрихкод вручную:</div>
-    <input id="manual" placeholder="Вставь barcode и нажми Enter" />
+    <div class="muted">Если камера не ловит — вставь штрихкод вручную:</div>
+    <input id="manual" placeholder="Вставь штрихкод и нажми Enter" />
   </div>
 
   <div id="out"></div>
 
-  <!-- ZXing: стабильный сканер для Android Chrome -->
   <script type="module">
     import {
       BrowserMultiFormatReader,
@@ -39,75 +64,68 @@
       NotFoundException
     } from "https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/+esm";
 
-    // ====== НАСТРОЙКИ SUPABASE ======
+    /* ================= НАСТРОЙКИ ================= */
+
     const SUPABASE_URL = "https://mfvxrikcsdczzspnjrhi.supabase.co";
-    const SUPABASE_ANON_KEY = "ВСТАВЬ_СВОЙ_ANON_KEY";
+
+    const SUPABASE_ANON_KEY =
+      "sb_publishable_vgoMuq7bXzlt25n3PIfmWg_MnTr9JgZ";
 
     const headers = {
-      "apikey": SUPABASE_ANON_KEY,
-      "Authorization": "Bearer " + SUPABASE_ANON_KEY
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: "Bearer " + SUPABASE_ANON_KEY
     };
+
+    /* ================= УТИЛИТЫ ================= */
 
     const $ = (id) => document.getElementById(id);
     const out = $("out");
 
-    function esc(s){ return String(s||"").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
-
-    async function supaGet(path) {
-      const res = await fetch(SUPABASE_URL + "/rest/v1/" + path, { headers });
-      if (!res.ok) throw new Error(await res.text());
-      return await res.json();
-    }
-
-    async function getOrderByBarcode(barcode) {
-      const rows = await supaGet(`pieces?select=order_number&barcode=eq.${encodeURIComponent(barcode)}&limit=1`);
-      return rows[0]?.order_number ? String(rows[0].order_number) : null;
-    }
-
-    async function getFirstAttachmentByOrder(orderNumber) {
-      const rows = await supaGet(
-        `order_attachments?select=file_name,file_url,uploaded_at`
-        + `&order_number=eq.${encodeURIComponent(orderNumber)}`
-        + `&order=uploaded_at.desc`
-        + `&limit=1`
-      );
-      return rows[0] || null;
-    }
-
-    function showInfo(title, text) {
+    function show(title, text) {
       out.innerHTML = `
         <div class="card">
-          <div class="big">${esc(title)}</div>
-          <div class="muted" style="margin-top:8px;">${esc(text)}</div>
+          <div class="big">${title}</div>
+          <div class="muted" style="margin-top:8px;">${text}</div>
         </div>`;
     }
 
-    async function openDrawingByBarcode(barcode) {
-      showInfo("Ищу…", `ШК: ${barcode}`);
-      try {
-        const orderNumber = await getOrderByBarcode(barcode);
-        if (!orderNumber) {
-          showInfo("Не найдено", "Штрихкод не найден в базе (pieces).");
-          return;
-        }
-
-        const file = await getFirstAttachmentByOrder(orderNumber);
-        if (!file || !file.file_url) {
-          showInfo("Нет чертежа", `Для заказа ${orderNumber} нет загруженного PDF/фото.`);
-          return;
-        }
-
-        // Надёжнее всего на Android: переход по ссылке
-        window.location.href = file.file_url;
-      } catch (e) {
-        showInfo("Ошибка", String(e.message || e));
-      }
+    async function supa(path) {
+      const r = await fetch(SUPABASE_URL + "/rest/v1/" + path, { headers });
+      if (!r.ok) throw new Error(await r.text());
+      return await r.json();
     }
 
-    // ====== СКАНЕР ZXING ======
+    async function openByBarcode(barcode) {
+      show("Поиск…", "Штрихкод: " + barcode);
+
+      const piece = await supa(
+        `pieces?select=order_number&barcode=eq.${encodeURIComponent(barcode)}&limit=1`
+      );
+
+      if (!piece.length) {
+        show("Не найдено", "Штрихкод отсутствует в базе");
+        return;
+      }
+
+      const order = piece[0].order_number;
+
+      const files = await supa(
+        `order_attachments?select=file_url&order_number=eq.${order}&limit=1`
+      );
+
+      if (!files.length) {
+        show("Нет чертежа", "Для заказа " + order + " нет PDF / фото");
+        return;
+      }
+
+      window.location.href = files[0].file_url;
+    }
+
+    /* ================= СКАНЕР ================= */
+
     const hints = new Map();
     hints.set(DecodeHintType.POSSIBLE_FORMATS, [
-      BarcodeFormat.CODE_128,   // ваш основной
+      BarcodeFormat.CODE_128,
       BarcodeFormat.EAN_13,
       BarcodeFormat.EAN_8,
       BarcodeFormat.CODE_39,
@@ -115,8 +133,7 @@
     ]);
 
     const reader = new BrowserMultiFormatReader(hints, {
-      delayBetweenScanAttempts: 150,   // быстрее пытается
-      delayBetweenScanSuccess: 800
+      delayBetweenScanAttempts: 150
     });
 
     let active = false;
@@ -124,55 +141,39 @@
     async function start() {
       if (active) return;
       active = true;
+
       $("btnScan").style.display = "none";
       $("btnStop").style.display = "block";
-      showInfo("Сканирование", "Наведи камеру на штрихкод…");
+      show("Сканирование", "Наведи камеру на штрихкод…");
 
-      try {
-        // Выбираем "заднюю" камеру
-        await reader.decodeFromConstraints(
-          { video: { facingMode: "environment" } },
-          $("preview"),
-          async (result, err) => {
-            if (!active) return;
-
-            if (result) {
-              const code = String(result.getText() || "").trim();
-              if (code) {
-                stop();
-                await openDrawingByBarcode(code);
-              }
-            } else if (err && !(err instanceof NotFoundException)) {
-              // NotFoundException = просто “ещё не увидел код”
-              console.log("scan err:", err);
-            }
+      await reader.decodeFromConstraints(
+        { video: { facingMode: "environment" } },
+        $("preview"),
+        async (result, err) => {
+          if (!active) return;
+          if (result) {
+            const code = result.getText();
+            stop();
+            await openByBarcode(code);
           }
-        );
-      } catch (e) {
-        active = false;
-        $("btnScan").style.display = "block";
-        $("btnStop").style.display = "none";
-        showInfo("Камера/сканер не стартовал", String(e.message || e));
-      }
+        }
+      );
     }
 
     function stop() {
-      if (!active) return;
       active = false;
-      try { reader.reset(); } catch {}
+      reader.reset();
       $("btnScan").style.display = "block";
       $("btnStop").style.display = "none";
-      showInfo("Остановлено", "Нажми “Сканировать” чтобы начать снова.");
     }
 
-    $("btnScan").addEventListener("click", start);
-    $("btnStop").addEventListener("click", stop);
+    $("btnScan").onclick = start;
+    $("btnStop").onclick = stop;
 
-    // Ручной ввод как запасной вариант
     $("manual").addEventListener("keydown", async (e) => {
       if (e.key === "Enter") {
         const code = $("manual").value.trim();
-        if (code) await openDrawingByBarcode(code);
+        if (code) await openByBarcode(code);
       }
     });
   </script>
